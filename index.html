@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
 <style>
@@ -33,7 +32,8 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 .card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg, 12px); padding: 1rem; }
 .card-title { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 
-#exercise-select { width: 100%; padding: 8px; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary); color: var(--color-text-primary); font-size: 14px; }
+#exercise-select, #label-select, #person-id { width: 100%; padding: 8px; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary); color: var(--color-text-primary); font-size: 14px; }
+#label-select, #person-id { margin-bottom: 8px; }
 
 .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 0.5px solid var(--color-border-tertiary); font-size: 13px; }
 .stat-row:last-child { border-bottom: none; }
@@ -44,6 +44,8 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 #btn-start:hover { background: #1459cc; }
 #btn-reset { width: 100%; padding: 8px; background: transparent; color: var(--color-text-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md, 8px); font-size: 13px; cursor: pointer; margin-top: 6px; }
 #btn-reset:hover { background: var(--color-background-secondary); }
+#btn-save { width: 100%; padding: 10px; margin-top: 8px; background: #16a34a; color: #fff; border: none; border-radius: var(--border-radius-md, 8px); font-size: 14px; cursor: pointer; font-weight: 500; }
+#btn-save:hover { background: #12853c; }
 
 #angle-bar-wrap { margin-top: 8px; }
 #angle-bar-bg { width: 100%; height: 8px; background: var(--color-background-secondary); border-radius: 4px; overflow: hidden; }
@@ -56,57 +58,6 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 
 #voice-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text-secondary); cursor: pointer; margin-top: 8px; }
 #voice-check { width: 16px; height: 16px; cursor: pointer; }
-
-/* Mobile fixes */
-@media (max-width: 700px) {
-  #app {
-    width: 100%;
-    max-width: 100%;
-    padding: 8px;
-  }
-
-  #main {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  #video-card {
-    width: 100%;
-  }
-
-  #video-wrap {
-    width: 100%;
-    aspect-ratio: 4 / 3;
-  }
-
-  #sidebar {
-    width: 100%;
-  }
-
-  #header h1 {
-    font-size: 17px;
-  }
-
-  #hud-reps {
-    font-size: 30px;
-  }
-
-  #btn-start, #btn-reset, #exercise-select {
-    min-height: 44px;
-  }
-}
-
-#camera-error {
-  display: none;
-  margin-top: 8px;
-  padding: 10px;
-  border-radius: 8px;
-  background: #fee2e2;
-  color: #991b1b;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
 </style>
 </head>
 <body>
@@ -155,8 +106,21 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
         </label>
 
         <button id="btn-start" style="margin-top:14px;">start camera</button>
-        <div id="camera-error"></div>
         <button id="btn-reset">reset reps</button>
+      </div>
+
+      <!-- NEW: data collection card -->
+      <div class="card">
+        <div class="card-title">data collection</div>
+        <input id="person-id" type="text" placeholder="person name (e.g. omar)">
+        <select id="label-select">
+          <option value="good">Good form</option>
+          <option value="bad_shallow">Bad: not deep enough</option>
+          <option value="bad_fast">Bad: too fast</option>
+          <option value="bad_other">Bad: other mistake</option>
+        </select>
+        <div class="stat-row"><span class="stat-label">reps recorded</span><span class="stat-value" id="stat-recorded">0</span></div>
+        <button id="btn-save">save data (CSV)</button>
       </div>
 
       <div class="card">
@@ -191,6 +155,10 @@ let voiceOn = true;
 let currentAngle = 0;
 let poseActive = false;
 
+// NEW: data collection variables
+let repBuf = [];   // angle frames of the rep currently in progress
+let dataset = [];  // one entry per finished rep
+
 const vid = document.getElementById('vid');
 const overlay = document.getElementById('overlay');
 const ctx = overlay.getContext('2d');
@@ -217,15 +185,50 @@ function addLog(msg, cls='') {
   log.prepend(d);
 }
 
-// FIXED: Calculate angle using 2D (X, Y) space only to resolve the < 90° depth tracking bug
+// Calculate angle using 2D (X, Y) space only
 function angle2D(lm, joints) {
   const [a, b, c] = joints;
   const ax = lm[a].x - lm[b].x, ay = lm[a].y - lm[b].y;
   const cx = lm[c].x - lm[b].x, cy = lm[c].y - lm[b].y;
-  
+
   const dot = ax*cx + ay*cy;
   const ma = Math.sqrt(ax*ax + ay*ay), mc = Math.sqrt(cx*cx + cy*cy);
   return Math.round(Math.acos(Math.max(-1, Math.min(1, dot / (ma * mc + 1e-8)))) * 180 / Math.PI);
+}
+
+// NEW: save one finished rep (its angle curve + a few summary numbers)
+function recordRep() {
+  if (repBuf.length < 5) return; // too short to be a real rep
+  const t0 = repBuf[0].t;
+  const angles = repBuf.map(f => Math.round(f.a * 10) / 10);
+  const times  = repBuf.map(f => Math.round(f.t - t0));
+  dataset.push({
+    person:      (document.getElementById('person-id').value.trim() || 'unknown').replace(/[,;\s]+/g, '_'),
+    exercise:    document.getElementById('exercise-select').value,
+    label:       document.getElementById('label-select').value,
+    rep:         reps,
+    duration_ms: times[times.length - 1],
+    min_angle:   Math.min(...angles),
+    max_angle:   Math.max(...angles),
+    angles:      angles.join(';'),
+    times:       times.join(';')
+  });
+  document.getElementById('stat-recorded').textContent = dataset.length;
+}
+
+// NEW: download everything recorded so far as a CSV file
+function saveCSV() {
+  if (!dataset.length) { addLog('Nothing to save yet - do some reps first'); return; }
+  const cols = Object.keys(dataset[0]);
+  const lines = [cols.join(',')].concat(dataset.map(r => cols.map(c => r[c]).join(',')));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'rehab_data_' + Date.now() + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  addLog('Saved ' + dataset.length + ' reps to CSV');
 }
 
 function updateRep(angleDeg) {
@@ -237,6 +240,11 @@ function updateRep(angleDeg) {
   document.getElementById('hud-angle').textContent = 'angle: ' + currentAngle + '°  (' + ex.desc + ')';
   document.getElementById('angle-bar').style.width = Math.min(100, (currentAngle / 180) * 100) + '%';
 
+  // NEW: a rep starts when the user is at the top position; keep every frame until the rep ends
+  if (!atBottom && smoothed >= ex.high) repBuf = [];
+  repBuf.push({ t: performance.now(), a: smoothed });
+  if (repBuf.length > 600) repBuf.shift();
+
   if (!atBottom && smoothed <= ex.low) {
     atBottom = true;
     document.getElementById('hud-phase').style.color = '#f97316';
@@ -245,6 +253,8 @@ function updateRep(angleDeg) {
   if (atBottom && smoothed >= ex.high) {
     atBottom = false;
     reps++;
+    recordRep(); // NEW: save this rep to the dataset
+    repBuf = [];
     document.getElementById('hud-reps').textContent = reps;
     document.getElementById('hud-phase').style.color = '#22c55e';
     document.getElementById('hud-phase').textContent = '✓ rep ' + reps + '!';
@@ -322,29 +332,10 @@ async function startCamera() {
   document.getElementById('btn-start').disabled = true;
 
   try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Camera API is unavailable. Open this page in Safari/Chrome over HTTPS.');
-    }
-
-    if (!window.isSecureContext && location.hostname !== 'localhost') {
-      throw new Error('Camera access requires HTTPS on mobile. Upload/serve this page from an HTTPS website.');
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'user' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    });
-
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
     vid.srcObject = stream;
-    await new Promise(resolve => {
-      if (vid.readyState >= 1) resolve();
-      else vid.onloadedmetadata = resolve;
-    });
-    await vid.play();
+    await new Promise(r => vid.onloadedmetadata = r);
+    vid.play();
 
     overlay.width = vid.videoWidth || 640;
     overlay.height = vid.videoHeight || 480;
@@ -360,12 +351,12 @@ async function startCamera() {
 
       if (lm) {
         const ex = getExercise();
-        
+
         // DYNAMIC SIDE DETECTION: Pick the side with better visibility or presence
         let chosenJoints = ex.left;
         const leftVisibility = lm[ex.left[0]].visibility + lm[ex.left[1]].visibility + lm[ex.left[2]].visibility;
         const rightVisibility = lm[ex.right[0]].visibility + lm[ex.right[1]].visibility + lm[ex.right[2]].visibility;
-        
+
         if (rightVisibility > leftVisibility) {
           chosenJoints = ex.right;
         }
@@ -403,53 +394,34 @@ async function startCamera() {
     }, 2000);
 
   } catch(e) {
-    console.error('Camera error:', e);
-
     document.getElementById('status-text').textContent = 'camera error';
     document.getElementById('btn-start').textContent = 'retry';
     document.getElementById('btn-start').disabled = false;
-
-    const errorBox = document.getElementById('camera-error');
-    let message = e && e.message ? e.message : String(e);
-
-    if (e && e.name === 'NotAllowedError') {
-      message = 'Camera permission was denied. On iPhone, allow camera access for this website in Settings > Safari > Camera, then reload the page.';
-    } else if (e && e.name === 'NotFoundError') {
-      message = 'No camera was found on this device.';
-    } else if (e && e.name === 'NotReadableError') {
-      message = 'The camera is busy or could not be opened. Close other apps using the camera and try again.';
-    } else if (e && e.name === 'SecurityError') {
-      message = 'The browser blocked camera access. Open this page over HTTPS.';
-    }
-
-    errorBox.textContent = 'Camera error: ' + message;
-    errorBox.style.display = 'block';
-    addLog('Error: ' + message);
+    addLog('Error: ' + e.message);
   }
 }
 
 document.getElementById('btn-start').onclick = () => { if (!started) startCamera(); };
 document.getElementById('btn-reset').onclick = () => {
   reps = 0; atBottom = false; smoothed = null; startTime = Date.now(); lastEncourage = 0;
+  repBuf = [];
   document.getElementById('hud-reps').textContent = '0';
   document.getElementById('hud-phase').textContent = 'waiting...';
   document.getElementById('hud-phase').style.color = '#aaa';
   document.getElementById('stat-reps').textContent = '0';
-  addLog('Counter reset');
+  addLog('Counter reset (recorded data is kept)');
 };
+document.getElementById('btn-save').onclick = saveCSV;
 document.getElementById('voice-check').onchange = e => {
   voiceOn = e.target.checked;
   if (voiceOn) speak('Voice coaching on', 0);
 };
 document.getElementById('exercise-select').onchange = () => {
-  smoothed = null; atBottom = false;
+  smoothed = null; atBottom = false; repBuf = [];
   addLog('Exercise changed to ' + getExercise().name);
   speak(getExercise().name, 0);
 };
 </script>
-
-
-
 
 </body>
 </html>
