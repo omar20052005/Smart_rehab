@@ -95,6 +95,12 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
           <option value="pushup">Push-up</option>
         </select>
 
+        <div style="font-size:12px; color:var(--color-text-secondary); margin:12px 0 4px;">arm / side closest to the camera</div>
+        <select id="arm-select" style="width:100%; padding:8px; border:0.5px solid var(--color-border-tertiary); border-radius:8px; background:var(--color-background-secondary); color:var(--color-text-primary); font-size:14px;">
+          <option value="right">Right</option>
+          <option value="left">Left</option>
+        </select>
+
         <div id="angle-bar-wrap" style="margin-top:12px;">
           <div style="font-size:12px; color:var(--color-text-secondary); margin-bottom:4px;">live joint angle</div>
           <div id="angle-bar-bg"><div id="angle-bar"></div></div>
@@ -115,6 +121,11 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 
         <button id="btn-start" style="margin-top:14px;">start camera</button>
         <button id="btn-reset">reset reps</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">position check</div>
+        <div id="checks"><div style="font-size:12px; color:var(--color-text-secondary);">Start the camera to check your position.</div></div>
       </div>
 
       <!-- NEW: data collection card -->
@@ -222,15 +233,19 @@ function recordRep(repNo) {
   const angles = col('a').map(r1), ed = col('ed').map(r3), tl = col('tl').map(r1);
   const times = col('t').map(t => Math.round(t - t0));
   const range = arr => Math.max(...arr) - Math.min(...arr);
+  const vis = col('v'), vmin = Math.min(...vis);
+  if (vmin < 0.4) { addLog('Rep ' + repNo + ' not saved: arm tracking was poor'); return; }
   dataset.push({
     person:      (document.getElementById('person-id').value.trim() || 'unknown').replace(/[,;\s]+/g, '_'),
     exercise:    document.getElementById('exercise-select').value,
     label:       document.getElementById('label-select').value,
+    side:        document.getElementById('arm-select').value,
     rep:         repNo,
     duration_ms: times[times.length - 1],
     min_angle:   Math.min(...angles),
     max_angle:   Math.max(...angles),
     elbow_drift: r3(range(ed)),   // how much the elbow moved sideways (relative to torso length)
+    side_on_gap: r3(lastGap), mean_visibility: r3(vis.reduce((x, y) => x + y, 0) / vis.length), min_visibility: r3(vmin),
     torso_swing: r1(range(tl)),   // how much the torso leaned (degrees)
     angles:      angles.join(';'),
     elbow_x:     ed.join(';'),
@@ -265,7 +280,7 @@ function updateRep(angleDeg, extra) {
   document.getElementById('angle-bar').style.width = Math.min(100, (currentAngle / 180) * 100) + '%';
 
   const now = performance.now();
-  const fr = { t: now, a: smoothed, ed: extra.ed, tl: extra.tl };
+  const fr = { t: now, a: smoothed, ed: extra.ed, tl: extra.tl, v: extra.v };
   ring.push(fr);
   while (ring.length > 1 && now - ring[0].t > 400) ring.shift();
 
@@ -362,15 +377,63 @@ function updateStats() {
 }
 
 // elbow drift + torso lean, measured on the same side as the tracked arm
-let lastExtra = { ed: 0, tl: 0 };
+let lastExtra = { ed: 0, tl: 0, v: 1 };
+let ready = false, readySince = 0, failSince = 0, lastGap = 0, lastChecksHtml = '';
+
+// elbow drift + torso lean + arm visibility, on the chosen side
 function bodyExtras(lm, right) {
-  const sh = lm[right ? 12 : 11], el = lm[right ? 14 : 13], hp = lm[right ? 24 : 23];
-  if (sh.visibility > 0.5 && el.visibility > 0.5 && hp.visibility > 0.5) {
+  const sh = lm[right ? 12 : 11], el = lm[right ? 14 : 13], wr = lm[right ? 16 : 15], hp = lm[right ? 24 : 23];
+  const v = Math.min(sh.visibility, el.visibility, wr.visibility);
+  if (v > 0.5 && hp.visibility > 0.5) {
     const torso = Math.hypot(sh.x - hp.x, sh.y - hp.y) + 1e-6;
-    lastExtra = { ed: (el.x - sh.x) / torso,                                   // elbow sideways offset / torso length
-                  tl: Math.atan2(sh.x - hp.x, hp.y - sh.y) * 180 / Math.PI };  // 0 = upright
-  }
+    lastExtra = { ed: (el.x - sh.x) / torso,                                    // elbow sideways offset / torso length
+                  tl: Math.atan2(sh.x - hp.x, hp.y - sh.y) * 180 / Math.PI, v }; // 0 = upright
+  } else lastExtra = { ...lastExtra, v };
   return lastExtra;
+}
+
+// position checklist (all numbers are starting values: tune them on real recordings)
+function computeChecks(lm, right) {
+  const J = right ? { s: 12, e: 14, w: 16, h: 24, an: 28 } : { s: 11, e: 13, w: 15, h: 23, an: 27 };
+  const other = lm[right ? 11 : 12], sh = lm[J.s], hp = lm[J.h], an = lm[J.an], nose = lm[0];
+  const torso = Math.hypot(sh.x - hp.x, sh.y - hp.y) + 1e-6;
+  const lean = Math.abs(Math.atan2(sh.x - hp.x, hp.y - sh.y) * 180 / Math.PI);
+  const gap = Math.abs(lm[11].x - lm[12].x) / torso;   // small = standing side-on
+  const height = an.y - nose.y;                         // head-to-ankle share of the frame
+  lastGap = gap;
+  const side = right ? 'right' : 'left';
+  const checks = [
+    { ok: [J.s, J.e, J.w, J.h].every(i => lm[i].visibility > 0.5) && an.visibility > 0.3, label: 'Whole body in frame', hint: 'Step back so your whole body is visible' },
+    { ok: gap < 0.35, label: 'Standing side-on', hint: 'Turn sideways to the camera' },
+    { ok: sh.z < other.z, label: 'Chosen arm faces camera', hint: 'Turn so your ' + side + ' arm is closest to the camera' },
+    { ok: lean < 12, label: 'Standing upright', hint: 'Stand up straight' },
+    { ok: height > 0.55 && height < 0.92, label: 'Right distance', hint: height <= 0.55 ? 'Move closer to the camera' : 'Step back from the camera' },
+    { ok: hp.x > 0.3 && hp.x < 0.7, label: 'Centered', hint: 'Move to the middle of the frame' },
+  ];
+  const bad = checks.find(c => !c.ok);
+  return { checks, ok: !bad, firstFail: bad ? bad.hint : '' };
+}
+
+function renderChecks(st) {
+  const html = st.checks.map(c => '<div class="stat-row"><span class="stat-label">' + c.label + '</span><span class="stat-value" style="color:' + (c.ok ? '#22c55e' : '#ef4444') + '">' + (c.ok ? '✓' : '✗') + '</span></div>').join('')
+    + '<div style="font-size:12px; margin-top:8px; color:' + (ready ? '#22c55e' : '#f97316') + '">' + (ready ? 'Ready: counting is ON' : st.ok ? 'Hold still...' : st.firstFail) + '</div>';
+  if (html !== lastChecksHtml) { document.getElementById('checks').innerHTML = html; lastChecksHtml = html; }
+}
+
+function abortRep() {
+  repBuf = []; ring = []; atBottom = false; finishAt = 0; smoothed = null;
+  addLog('Position lost: this rep was not saved');
+}
+
+// angle number next to the elbow (canvas is mirrored by CSS, so un-mirror the text)
+function drawAngle(lm, j) {
+  const el = lm[j[1]], W = overlay.width, H = overlay.height;
+  if (el.visibility < 0.5) return;
+  ctx.save(); ctx.translate(el.x * W, el.y * H); ctx.scale(-1, 1);
+  ctx.font = 'bold 18px sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.fillStyle = '#fff';
+  const t = angle2D(lm, j) + '°';
+  ctx.strokeText(t, 12, -12); ctx.fillText(t, 12, -12);
+  ctx.restore();
 }
 
 // demo: animated stick figure (side view), 2 s up + 2 s down
@@ -425,24 +488,38 @@ async function startCamera() {
       if (lm) {
         const ex = getExercise();
 
-        // DYNAMIC SIDE DETECTION: Pick the side with better visibility or presence
-        let chosenJoints = ex.left;
-        const leftVisibility = lm[ex.left[0]].visibility + lm[ex.left[1]].visibility + lm[ex.left[2]].visibility;
-        const rightVisibility = lm[ex.right[0]].visibility + lm[ex.right[1]].visibility + lm[ex.right[2]].visibility;
-
-        if (rightVisibility > leftVisibility) {
-          chosenJoints = ex.right;
-        }
-
+        // LOCKED SIDE: only the arm chosen in the dropdown is used (no switching mid-rep)
+        const right = document.getElementById('arm-select').value === 'right';
+        const chosenJoints = right ? ex.right : ex.left;
         drawSkeleton(lm, chosenJoints);
+        drawAngle(lm, chosenJoints);
+
+        const st = computeChecks(lm, right);
+        const now = performance.now();
+        if (st.ok) {
+          failSince = 0;
+          if (!readySince) readySince = now;
+          if (!ready && now - readySince > 1500) { ready = true; speak('Ready. Start when you like.', 0); }
+        } else {
+          if (!failSince) failSince = now;
+          if (now - failSince > 400) {          // ignore very short glitches
+            if (ready || atBottom || finishAt) abortRep();
+            ready = false; readySince = 0;
+            speak(st.firstFail, 6000);
+            document.getElementById('hud-phase').style.color = '#f97316';
+            document.getElementById('hud-phase').textContent = 'check position';
+          }
+        }
+        renderChecks(st);
 
         const [a, b, c] = chosenJoints;
-        if (lm[a].visibility > 0.5 && lm[b].visibility > 0.5 && lm[c].visibility > 0.5) {
-          const ang = angle2D(lm, chosenJoints);
-          updateRep(ang, bodyExtras(lm, chosenJoints === ex.right));
+        if (ready && lm[a].visibility > 0.5 && lm[b].visibility > 0.5 && lm[c].visibility > 0.5) {
+          updateRep(angle2D(lm, chosenJoints), bodyExtras(lm, right));
         }
       } else {
         ctx.clearRect(0, 0, overlay.width, overlay.height);
+        if (atBottom || finishAt) abortRep();
+        ready = false; readySince = 0;
       }
       updateStats();
     });
@@ -488,6 +565,10 @@ document.getElementById('btn-reset').onclick = () => {
   addLog('Counter reset (recorded data is kept)');
 };
 document.getElementById('btn-save').onclick = saveCSV;
+document.getElementById('arm-select').onchange = () => {
+  repBuf = []; ring = []; atBottom = false; finishAt = 0; smoothed = null; ready = false; readySince = 0;
+  addLog('Arm changed to ' + document.getElementById('arm-select').value);
+};
 document.getElementById('voice-check').onchange = e => {
   voiceOn = e.target.checked;
   if (voiceOn) speak('Voice coaching on', 0);
