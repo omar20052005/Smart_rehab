@@ -201,15 +201,26 @@ const ctx = overlay.getContext('2d');
 
 function getExercise() { return EXERCISES[document.getElementById('exercise-select').value]; }
 
-function speak(msg, minGap = 4000) {
+// Use a local (offline) voice if there is one: online voices add a delay before every sentence.
+let voice = null;
+function pickVoice() { voice = speechSynthesis.getVoices().find(v => v.localService && v.lang.startsWith('en')) || null; }
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+
+// urgent = replaces whatever is being said (rep counts). Normal messages are dropped when the voice is
+// busy, so speech never piles up behind fast reps.
+function speak(msg, minGap = 4000, urgent = false) {
   if (!voiceOn) return;
   const now = Date.now();
-  if ((speak._last||{})[msg] && now - speak._last[msg] < minGap) return;
   speak._last = speak._last || {};
+  if (speak._last[msg] && now - speak._last[msg] < minGap) return;
+  if (urgent) speechSynthesis.cancel();
+  else if (speechSynthesis.speaking || speechSynthesis.pending) return;
   speak._last[msg] = now;
   const u = new SpeechSynthesisUtterance(msg);
-  u.rate = 1.0; u.volume = 0.9;
-  speechSynthesis.speak(u);
+  u.rate = 1.15; u.volume = 0.9;
+  if (voice) u.voice = voice;
+  if (urgent) setTimeout(() => speechSynthesis.speak(u), 50);   // small gap: Chrome can drop a speak() right after cancel()
+  else speechSynthesis.speak(u);
 }
 
 function addLog(msg, cls='') {
@@ -318,8 +329,8 @@ function updateRep(angleDeg, extra) {
     document.getElementById('hud-phase').textContent = '✓ rep ' + reps + '!';
     document.getElementById('stat-reps').textContent = reps;
     addLog('Rep ' + reps + ' — ' + ex.name, 'rep');
-    speak('Good! Rep ' + reps, 1500);
-    if (reps % 5 === 0) speak('Amazing! ' + reps + ' reps done!', 0);
+    speak(reps % 5 === 0 ? 'Great, ' + reps + ' reps' : String(reps), 0, true);   // short, so it keeps up with fast reps
+    
     setTimeout(() => {
       if (atBottom) return;
       document.getElementById('hud-phase').style.color = '#aaa';
@@ -520,7 +531,7 @@ async function startCamera() {
         if (st.ok) {
           failSince = 0;
           if (!readySince) readySince = now;
-          if (!ready && now - readySince > 1500) { ready = true; speak('Ready. Start when you like.', 0); }
+          if (!ready && now - readySince > 1500) { ready = true; speak('Ready. Start when you like.', 0, true); }
         } else {
           if (!failSince) failSince = now;
           if (now - failSince > 400) {          // ignore very short glitches
