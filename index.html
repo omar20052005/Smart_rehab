@@ -7,14 +7,14 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: var(--font-sans, sans-serif); background: var(--color-background-tertiary, #f5f5f5); }
 
-#app { max-width: 900px; margin: 0 auto; padding: 1rem; }
+#app { max-width: 1380px; margin: 0 auto; padding: 1rem; }
 
 #header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
 #header h1 { font-size: 18px; font-weight: 500; color: var(--color-text-primary); }
 #status-dot { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; margin-right: 6px; }
 #status-text { font-size: 13px; color: var(--color-text-secondary); }
 
-#main { display: grid; grid-template-columns: 1fr 260px; gap: 12px; }
+#main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 270px; gap: 16px; align-items: start; }
 
 #video-card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg, 12px); overflow: hidden; position: relative; }
 #video-wrap { position: relative; width: 100%; aspect-ratio: 4/3; background: #111; }
@@ -32,7 +32,7 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 .card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg, 12px); padding: 1rem; }
 .card-title { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 
-#exercise-select, #label-select, #person-id { width: 100%; padding: 8px; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary); color: var(--color-text-primary); font-size: 14px; }
+#exercise-select, #arm-select, #label-select, #person-id { width: 100%; padding: 8px; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary); color: var(--color-text-primary); font-size: 14px; }
 #label-select, #person-id { margin-bottom: 8px; }
 
 .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 0.5px solid var(--color-border-tertiary); font-size: 13px; }
@@ -58,6 +58,18 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 
 #voice-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text-secondary); cursor: pointer; margin-top: 8px; }
 #voice-check { width: 16px; height: 16px; cursor: pointer; }
+.side { display: flex; flex-direction: column; gap: 12px; }
+#center { min-width: 0; }
+#video-card, #toolbar { max-width: min(100%, calc((100vh - 200px) * 4 / 3)); margin-left: auto; margin-right: auto; }
+#video-card { box-shadow: 0 4px 18px rgba(0,0,0,0.14); }
+#toolbar { margin-top: 12px; }
+.card { box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.field-label { font-size: 12px; color: var(--color-text-secondary); margin: 12px 0 4px; }
+.btn-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+#btn-start { width: auto; flex: 2; }
+#btn-reset { width: auto; flex: 1; margin-top: 0; padding: 10px; }
+#voice-toggle { margin-top: 0; white-space: nowrap; }
+@media (max-width: 1050px) { #main { grid-template-columns: 1fr; } #center { order: -1; } }
 </style>
 </head>
 <body>
@@ -71,65 +83,61 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
   </div>
 
   <div id="main">
-    <div id="video-card">
-      <div id="video-wrap">
-        <video id="vid" playsinline autoplay muted></video>
-        <canvas id="overlay"></canvas>
-        <div id="hud">
-          <div id="hud-reps">0</div>
-          <div id="hud-label">reps</div>
-          <div id="hud-angle">angle: —</div>
-          <div id="hud-phase" style="color:#aaa">waiting...</div>
-        </div>
-      </div>
-    </div>
 
-    <div id="sidebar">
+    <!-- LEFT: what to do -->
+    <div class="side">
       <div class="card">
         <div class="card-title">exercise</div>
         <select id="exercise-select">
           <option value="bicep_curl">Bicep curl</option>
           <option value="triceps_ext">Triceps overhead extension</option>
-          <option value="squat">Squat</option>
-          <option value="shoulder_raise">Shoulder raise</option>
-          <option value="pushup">Push-up</option>
         </select>
-
-        <div style="font-size:12px; color:var(--color-text-secondary); margin:12px 0 4px;">arm / side closest to the camera</div>
-        <select id="arm-select" style="width:100%; padding:8px; border:0.5px solid var(--color-border-tertiary); border-radius:8px; background:var(--color-background-secondary); color:var(--color-text-primary); font-size:14px;">
+        <div class="field-label">arm / side closest to the camera</div>
+        <select id="arm-select">
           <option value="right">Right</option>
           <option value="left">Left</option>
         </select>
-
-        <div id="angle-bar-wrap" style="margin-top:12px;">
-          <div style="font-size:12px; color:var(--color-text-secondary); margin-bottom:4px;">live joint angle</div>
-          <div id="angle-bar-bg"><div id="angle-bar"></div></div>
-          <div class="bar-labels"><span>0°</span><span>90°</span><span>180°</span></div>
-        </div>
-
-        <div id="demo-wrap" style="margin-top:12px;">
-          <div style="font-size:12px; color:var(--color-text-secondary); margin-bottom:4px;">how to do it (demo)</div>
-          <canvas id="demo" width="240" height="190" style="width:100%; border-radius:8px; background:var(--color-background-secondary);"></canvas>
-          <ul id="demo-tips" style="font-size:12px; color:var(--color-text-secondary); margin:6px 0 0 16px;"></ul>
-          <div style="font-size:11px; color:var(--color-text-secondary); margin-top:4px;">Reference only. The doctor confirms the final criteria.</div>
-        </div>
-
-        <label id="voice-toggle">
-          <input type="checkbox" id="voice-check" checked>
-          voice coaching
-        </label>
-
-        <button id="btn-start" style="margin-top:14px;">start camera</button>
-        <button id="btn-reset">reset reps</button>
       </div>
+      <div class="card">
+        <div class="card-title">how to do it</div>
+        <canvas id="demo" width="240" height="190" style="width:100%; border-radius:8px; background:var(--color-background-secondary);"></canvas>
+        <ul id="demo-tips" style="font-size:12px; color:var(--color-text-secondary); margin:8px 0 0 16px;"></ul>
+        <div style="font-size:11px; color:var(--color-text-secondary); margin-top:6px;">Reference only. The doctor confirms the final criteria.</div>
+      </div>
+    </div>
 
+    <!-- CENTER: camera -->
+    <div id="center">
+      <div id="video-card">
+        <div id="video-wrap">
+          <video id="vid" playsinline autoplay muted></video>
+          <canvas id="overlay"></canvas>
+          <div id="hud">
+            <div id="hud-reps">0</div>
+            <div id="hud-label">reps</div>
+            <div id="hud-angle">angle: —</div>
+            <div id="hud-phase" style="color:#aaa">waiting...</div>
+          </div>
+        </div>
+      </div>
+      <div id="toolbar" class="card">
+        <div style="font-size:12px; color:var(--color-text-secondary); margin-bottom:4px;">live joint angle</div>
+        <div id="angle-bar-bg"><div id="angle-bar"></div></div>
+        <div class="bar-labels"><span>0°</span><span>90°</span><span>180°</span></div>
+        <div class="btn-row">
+          <button id="btn-start">start camera</button>
+          <button id="btn-reset">reset reps</button>
+          <label id="voice-toggle"><input type="checkbox" id="voice-check" checked> voice coaching</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: checks, data, stats -->
+    <div class="side">
       <div class="card">
         <div class="card-title">position check</div>
         <div id="checks"><div style="font-size:12px; color:var(--color-text-secondary);">Start the camera to check your position.</div></div>
-        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--color-text-secondary); margin-top:8px; cursor:pointer;"><input type="checkbox" id="guide-check" checked> show outline guide</label>
       </div>
-
-      <!-- NEW: data collection card -->
       <div class="card">
         <div class="card-title">data collection</div>
         <input id="person-id" type="text" placeholder="person name (e.g. omar)">
@@ -144,7 +152,6 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
         <div class="stat-row"><span class="stat-label">reps recorded</span><span class="stat-value" id="stat-recorded">0</span></div>
         <button id="btn-save">save data (CSV)</button>
       </div>
-
       <div class="card">
         <div class="card-title">session stats</div>
         <div class="stat-row"><span class="stat-label">total reps</span><span class="stat-value" id="stat-reps">0</span></div>
@@ -152,12 +159,12 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
         <div class="stat-row"><span class="stat-label">reps/min</span><span class="stat-value" id="stat-rpm">—</span></div>
         <div class="stat-row"><span class="stat-label">pose detected</span><span class="stat-value" id="stat-pose">no</span></div>
       </div>
-
       <div class="card">
         <div class="card-title">activity log</div>
         <div id="log"><div class="log-entry">Session not started.</div></div>
       </div>
     </div>
+
   </div>
 </div>
 
@@ -351,6 +358,7 @@ function drawSkeleton(lm, activeJoints) {
   ctx.stroke();
 
   lm.forEach((p, i) => {
+    if (i <= 10) return;   // no face points
     if (p.visibility > 0.5) {
       const isKey = activeJoints.includes(i);
       ctx.beginPath();
@@ -426,30 +434,16 @@ function abortRep() {
   addLog('Position lost: this rep was not saved');
 }
 
-// outline guide: stand inside the dashed zone, head on the circle, feet on the line.
-// Same proportions as the checks (centered 30-70%, head-to-ankle about 74% of the frame).
-function drawGuide(st, isReady) {
-  if (!document.getElementById('guide-check').checked) return;
-  const W = overlay.width, H = overlay.height;
-  const col = isReady ? '#22c55e' : (st && st.ok) ? '#eab308' : '#f97316';
-  ctx.save();
-  ctx.globalAlpha = isReady ? 0.3 : 0.9;
-  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
-  ctx.strokeRect(W * 0.3, H * 0.05, W * 0.4, H * 0.87);                                        // standing zone
-  ctx.beginPath(); ctx.arc(W * 0.5, H * 0.14, H * 0.05, 0, 7); ctx.stroke();                    // head
-  ctx.beginPath(); ctx.moveTo(W * 0.5, H * 0.19); ctx.lineTo(W * 0.5, H * 0.88); ctx.stroke();  // body line
-  ctx.setLineDash([]);
-  ctx.beginPath(); ctx.moveTo(W * 0.38, H * 0.88); ctx.lineTo(W * 0.62, H * 0.88); ctx.stroke(); // feet line
+// instruction text at the bottom of the video (un-mirrored, because the canvas is mirrored by CSS)
+function drawHint(st, isReady) {
+  if (isReady || (st && st.ok)) return;
+  const W = overlay.width, H = overlay.height, msg = st ? st.firstFail : 'Step into the frame';
+  ctx.save(); ctx.translate(W / 2, H - 22); ctx.scale(-1, 1);
+  ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
+  const w = ctx.measureText(msg).width + 24;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(-w / 2, -16, w, 26);
+  ctx.fillStyle = '#fff'; ctx.fillText(msg, 0, 3);
   ctx.restore();
-  if (!isReady && (!st || !st.ok)) {                      // instruction at the bottom (text un-mirrored)
-    const msg = st ? st.firstFail : 'Step into the frame';
-    ctx.save(); ctx.translate(W / 2, H - 22); ctx.scale(-1, 1);
-    ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
-    const w = ctx.measureText(msg).width + 24;
-    ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(-w / 2, -16, w, 26);
-    ctx.fillStyle = '#fff'; ctx.fillText(msg, 0, 3);
-    ctx.restore();
-  }
 }
 
 // angle number next to the elbow (canvas is mirrored by CSS, so un-mirror the text)
@@ -538,7 +532,7 @@ async function startCamera() {
           }
         }
         renderChecks(st);
-        drawGuide(st, ready);
+        drawHint(st, ready);
 
         const [a, b, c] = chosenJoints;
         if (ready && lm[a].visibility > 0.5 && lm[b].visibility > 0.5 && lm[c].visibility > 0.5) {
@@ -548,14 +542,14 @@ async function startCamera() {
         ctx.clearRect(0, 0, overlay.width, overlay.height);
         if (atBottom || finishAt) abortRep();
         ready = false; readySince = 0;
-        drawGuide(null, false);
+        drawHint(null, false);
       }
       updateStats();
     });
 
     const camera = new Camera(vid, {
       onFrame: async () => { await pose.send({ image: vid }); },
-      width: 640, height: 480
+      width: 960, height: 720
     });
     camera.start();
 
