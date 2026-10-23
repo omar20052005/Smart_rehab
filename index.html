@@ -70,6 +70,8 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
 #btn-reset { width: auto; flex: 1; margin-top: 0; padding: 10px; }
 #voice-toggle { margin-top: 0; white-space: nowrap; }
 @media (max-width: 1050px) { #main { grid-template-columns: 1fr; } #center { order: -1; } }
+#btn-undo { width: 100%; padding: 8px; background: transparent; color: var(--color-text-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: 8px; font-size: 13px; cursor: pointer; margin-top: 6px; }
+#btn-undo:hover { background: var(--color-background-secondary); }
 </style>
 </head>
 <body>
@@ -149,8 +151,10 @@ canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
           <option value="bad_swing">Bad: swinging torso</option>
           <option value="bad_elbow">Bad: elbow drifting</option>
         </select>
+        <div id="progress" style="margin-bottom:6px;"></div>
         <div class="stat-row"><span class="stat-label">reps recorded</span><span class="stat-value" id="stat-recorded">0</span></div>
         <button id="btn-save">save data (CSV)</button>
+        <button id="btn-undo">undo last rep</button>
       </div>
       <div class="card">
         <div class="card-title">session stats</div>
@@ -253,7 +257,7 @@ function recordRep(repNo) {
   const times = col('t').map(t => Math.round(t - t0));
   const range = arr => Math.max(...arr) - Math.min(...arr);
   const vis = col('v'), vmin = Math.min(...vis);
-  if (vmin < 0.4) { addLog('Rep ' + repNo + ' not saved: arm tracking was poor'); return; }
+  if (vmin < 0.4) { flash('Rep ' + repNo + ' not saved: tracking was poor'); return; }
   dataset.push({
     person:      (document.getElementById('person-id').value.trim() || 'unknown').replace(/[,;\s]+/g, '_'),
     exercise:    document.getElementById('exercise-select').value,
@@ -271,14 +275,15 @@ function recordRep(repNo) {
     torso_lean:  tl.join(';'),
     times:       times.join(';')
   });
-  document.getElementById('stat-recorded').textContent = dataset.length;
+  afterChange();
 }
 
-// NEW: download everything recorded so far as a CSV file
+// download only the reps that were not saved yet (so files never contain duplicates)
 function saveCSV() {
-  if (!dataset.length) { addLog('Nothing to save yet - do some reps first'); return; }
-  const cols = Object.keys(dataset[0]);
-  const lines = [cols.join(',')].concat(dataset.map(r => cols.map(c => r[c]).join(',')));
+  const rows = dataset.slice(savedUpTo);
+  if (!rows.length) { addLog('Nothing new to save'); return; }
+  const cols = Object.keys(rows[0]);
+  const lines = [cols.join(',')].concat(rows.map(r => cols.map(c => r[c]).join(',')));
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -286,7 +291,8 @@ function saveCSV() {
   a.download = 'rehab_data_' + Date.now() + '.csv';
   a.click();
   URL.revokeObjectURL(url);
-  addLog('Saved ' + dataset.length + ' reps to CSV');
+  savedUpTo = dataset.length; backup();
+  addLog('Saved ' + rows.length + ' new reps to CSV');
 }
 
 function updateRep(angleDeg, extra) {
@@ -422,8 +428,12 @@ function computeChecks(lm, right) {
   const height = an.y - nose.y;                         // head-to-ankle share of the frame
   lastGap = gap;
   const side = right ? 'right' : 'left';
+  const nm = { s: 'shoulder', e: 'elbow', w: 'wrist', h: 'hip' };
+  const lost = ['s', 'e', 'w', 'h'].filter(k => lm[J[k]].visibility <= 0.5).map(k => nm[k]);
+  const visHint = lost.length ? side + ' ' + lost.join(' + ') + ' hard to see' : 'Step back so your feet are visible';
   const checks = [
-    { ok: [J.s, J.e, J.w, J.h].every(i => lm[i].visibility > 0.5) && an.visibility > 0.3, label: 'Whole body in frame', hint: 'Step back so your whole body is visible' },
+    { ok: brightness > 60, label: 'Good lighting', hint: 'Room too dark: turn on a light' },
+    { ok: !lost.length && an.visibility > 0.3, label: 'Whole body in frame', hint: visHint },
     { ok: gap < 0.35, label: 'Standing side-on', hint: 'Turn sideways to the camera' },
     { ok: sh.z < other.z, label: 'Chosen arm faces camera', hint: 'Turn so your ' + side + ' arm is closest to the camera' },
     { ok: lean < 12, label: 'Standing upright', hint: 'Stand up straight' },
@@ -442,7 +452,7 @@ function renderChecks(st) {
 
 function abortRep() {
   repBuf = []; ring = []; atBottom = false; finishAt = 0; smoothed = null;
-  addLog('Position lost: this rep was not saved');
+  flash('Position lost: rep not saved');
 }
 
 // instruction text at the bottom of the video (un-mirrored, because the canvas is mirrored by CSS)
@@ -468,6 +478,64 @@ function drawAngle(lm, j) {
   ctx.restore();
 }
 
+// ---- alerts, progress, backup ----
+let savedUpTo = 0;   // reps before this index were already saved to a CSV file
+function flash(msg) {   // visible + spoken alert
+  addLog(msg);
+  const h = document.getElementById('hud-phase');
+  h.style.color = '#ef4444'; h.textContent = msg;
+  speak(msg, 3000, true);
+}
+
+let brightness = 128, lastBr = 0;   // average picture brightness (0-255), checked twice a second
+const brCv = document.createElement('canvas'); brCv.width = 32; brCv.height = 24;
+const brCtx = brCv.getContext('2d', { willReadFrequently: true });
+function updateBrightness() {
+  const now = performance.now();
+  if (now - lastBr < 500) return;
+  lastBr = now;
+  try {
+    brCtx.drawImage(vid, 0, 0, 32, 24);
+    const d = brCtx.getImageData(0, 0, 32, 24).data; let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    brightness = sum / (d.length / 4);
+  } catch (e) {}
+}
+
+// how many reps to record per label (per person, per exercise)
+const TARGETS = {
+  bicep_curl:  { good: 20, bad_shallow: 10, bad_fast: 10, bad_swing: 10 },
+  triceps_ext: { good: 20, bad_no_extend: 10, bad_fast: 10, bad_elbow: 10 },
+};
+function renderProgress() {
+  const exId = document.getElementById('exercise-select').value;
+  const who = (document.getElementById('person-id').value.trim() || 'unknown').replace(/[,;\s]+/g, '_');
+  const sel = document.getElementById('label-select'), names = {};
+  [...sel.options].forEach(o => names[o.value] = o.text);
+  document.getElementById('progress').innerHTML = Object.entries(TARGETS[exId] || {}).map(([lab, goal]) => {
+    const n = dataset.filter(r => r.exercise === exId && r.person === who && r.label === lab).length;
+    const done = n >= goal;
+    return '<div class="stat-row"><span class="stat-label" style="' + (lab === sel.value ? 'color:var(--color-text-primary); font-weight:500;' : '') + '">' + names[lab]
+      + '</span><span class="stat-value" style="color:' + (done ? '#22c55e' : 'inherit') + '">' + n + '/' + goal + (done ? ' ✓' : '') + '</span></div>';
+  }).join('');
+}
+
+function backup() {
+  try { localStorage.setItem('smartrehab_backup', JSON.stringify({ data: dataset, saved: savedUpTo })); }
+  catch (e) { addLog('Auto-backup failed: save your CSV now'); }
+}
+function afterChange() { document.getElementById('stat-recorded').textContent = dataset.length; renderProgress(); backup(); }
+
+try {   // restore reps that were never saved (browser crash / refresh)
+  const bk = JSON.parse(localStorage.getItem('smartrehab_backup') || 'null');
+  const unsaved = bk && bk.data ? bk.data.length - (bk.saved || 0) : 0;
+  if (unsaved > 0 && confirm('Found ' + unsaved + ' unsaved reps from your last session.\n\nOK = restore them\nCancel = start fresh (they will be deleted)')) {
+    dataset = bk.data; savedUpTo = bk.saved || 0;
+    document.getElementById('stat-recorded').textContent = dataset.length;
+  } else if (bk) localStorage.removeItem('smartrehab_backup');
+} catch (e) {}
+renderProgress();
+
 // demo: animated stick figure (side view), 2 s up + 2 s down
 const demoCv = document.getElementById('demo'), dg = demoCv.getContext('2d');
 function setDemoTips() {
@@ -492,7 +560,7 @@ function drawDemo(ts) {
   requestAnimationFrame(drawDemo);
 }
 setDemoTips(); requestAnimationFrame(drawDemo);
-window.addEventListener('beforeunload', e => { if (dataset.length) e.preventDefault(); });
+window.addEventListener('beforeunload', e => { if (dataset.length > savedUpTo) e.preventDefault(); });
 
 let pose;
 async function startCamera() {
@@ -526,6 +594,7 @@ async function startCamera() {
         drawSkeleton(lm, chosenJoints);
         drawAngle(lm, chosenJoints);
 
+        updateBrightness();
         const st = computeChecks(lm, right);
         const now = performance.now();
         if (st.ok) {
@@ -599,6 +668,12 @@ document.getElementById('btn-reset').onclick = () => {
   addLog('Counter reset (recorded data is kept)');
 };
 document.getElementById('btn-save').onclick = saveCSV;
+document.getElementById('btn-undo').onclick = () => {
+  if (dataset.length <= savedUpTo) { addLog(dataset.length ? 'That rep was already saved to a file' : 'No reps to undo'); return; }
+  const r = dataset.pop(); afterChange(); addLog('Removed last rep (' + r.label + ')');
+};
+document.getElementById('person-id').oninput = renderProgress;
+document.getElementById('label-select').onchange = renderProgress;
 document.getElementById('arm-select').onchange = () => {
   repBuf = []; ring = []; atBottom = false; finishAt = 0; smoothed = null; ready = false; readySince = 0;
   addLog('Arm changed to ' + document.getElementById('arm-select').value);
@@ -609,7 +684,7 @@ document.getElementById('voice-check').onchange = e => {
 };
 document.getElementById('exercise-select').onchange = () => {
   smoothed = null; atBottom = false; repBuf = []; finishAt = 0; ring = [];
-  addLog('Exercise changed to ' + getExercise().name); setDemoTips();
+  addLog('Exercise changed to ' + getExercise().name); setDemoTips(); renderProgress();
   speak(getExercise().name, 0);
 };
 </script>
